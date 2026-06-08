@@ -38,6 +38,7 @@ from utils_folder.face_utils import REMBG_SESSION
 from facenet_pytorch import MTCNN
 from huggingface_hub import snapshot_download
 
+from diffusers import DPMSolverMultistepScheduler
 from mvdiffusion.pipelines.pipeline_mvdiffusion_unclip import StableUnCLIPImg2ImgPipeline
 from utils_folder.face_utils import preprocess_image, preprocess_image_without_cropping
 
@@ -108,6 +109,13 @@ def initialize_mvdiffusion_pipeline(mvdiffusion_checkpoint_path: str, device: to
     diffusion_pipeline = StableUnCLIPImg2ImgPipeline.from_pretrained(
         mvdiffusion_checkpoint_path,
         torch_dtype=torch.float16,
+    )
+    # DPM-Solver++ converges in ~25 steps vs DDIM's 70, with equivalent quality.
+    # from_config inherits beta schedule and v_prediction from the original DDIM config.
+    diffusion_pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
+        diffusion_pipeline.scheduler.config,
+        algorithm_type="dpmsolver++",
+        solver_order=2,
     )
     diffusion_pipeline.unet.enable_xformers_memory_efficient_attention()
     diffusion_pipeline.to(device)

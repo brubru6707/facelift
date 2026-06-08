@@ -135,7 +135,7 @@ def process_image():
                 demo_fxfycxcy=_camera_intrinsics,
                 demo_c2w=_camera_extrinsics,
                 guidance_scale_2D=3.0,
-                step_2D=70,
+                step_2D=25,
                 face_detector=_face_detector,
             )
 
