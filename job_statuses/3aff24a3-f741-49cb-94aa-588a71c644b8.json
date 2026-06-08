@@ -1,1 +1,0 @@
-{"status": "error", "message": "Unexpected error: Given groups=1, weight of size [128, 3, 3, 3], expected input[6, 4, 512, 512] to have 3 channels, but got 4 channels instead"}
