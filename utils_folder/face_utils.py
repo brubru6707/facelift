@@ -40,8 +40,8 @@ DEFAULT_IMG_SIZE = 512
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Persistent rembg session — loaded once at import time instead of per call
-# u2netp is the lighter U2Net variant; CUDAExecutionProvider runs inference on GPU.
-REMBG_SESSION = new_session("u2netp", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+# u2net is the full-size model; higher quality background removal than u2netp.
+REMBG_SESSION = new_session("u2net", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
 
 # Default face detector instance
 FACE_DETECTOR = MTCNN(
