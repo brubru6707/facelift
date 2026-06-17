@@ -414,6 +414,7 @@ class StableUnCLIPImg2ImgPipeline(DiffusionPipeline):
         noise_level: int = 0,
         image_embeds: Optional[torch.FloatTensor] = None,
         gt_img_in: Optional[torch.FloatTensor] = None,
+        cache_interval: int = 2,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -582,6 +583,9 @@ class StableUnCLIPImg2ImgPipeline(DiffusionPipeline):
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         eles, focals = [], []
+        # reset DeepCache state for this generation
+        self.unet._cache_feature = None
+        self.unet._cache_res_samples = None
         # 8. Denoising loop
         for i, t in enumerate(self.progress_bar(timesteps)):
             if do_classifier_free_guidance:
@@ -593,6 +597,8 @@ class StableUnCLIPImg2ImgPipeline(DiffusionPipeline):
                 ], dim=1)
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+            use_cache = (cache_interval > 1) and (i % cache_interval != 0) and (self.unet._cache_feature is not None)
+
             # predict the noise residual
             unet_out = self.unet(
                 latent_model_input,
@@ -600,7 +606,8 @@ class StableUnCLIPImg2ImgPipeline(DiffusionPipeline):
                 encoder_hidden_states=prompt_embeds,
                 class_labels=image_embeds,
                 cross_attention_kwargs=cross_attention_kwargs,
-                return_dict=False)
+                return_dict=False,
+                use_cache=use_cache)
             
             noise_pred = unet_out
                 
