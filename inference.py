@@ -178,6 +178,7 @@ def process_single_image(
     face_detector: Optional[MTCNN] = None
 ) -> None:
     """Process a single image through the 3D reconstruction pipeline."""
+    print("sped up version")
     import time
     pipeline_start = time.time()
     print(f"Processing {image_file}")
