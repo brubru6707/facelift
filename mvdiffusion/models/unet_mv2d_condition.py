@@ -712,6 +712,9 @@ class UNetMV2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixi
             block_out_channels[0], out_channels, kernel_size=conv_out_kernel, padding=conv_out_padding
         )
 
+        self._cache_feature = None
+        self._cache_res_samples = None
+
     @property
     def attn_processors(self) -> Dict[str, AttentionProcessor]:
         r"""
@@ -860,6 +863,7 @@ class UNetMV2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixi
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         vis_max_min: bool = False,
+        use_cache: bool = False,
     ) -> Union[UNetMV2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1043,75 +1047,83 @@ class UNetMV2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixi
                 )
             image_embeds = added_cond_kwargs.get("image_embeds")
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
-        # 2. pre-process
-        sample = self.conv_in(sample)
-        # 3. down
+        if not use_cache:
+            # 2. pre-process
+            sample = self.conv_in(sample)
+            # 3. down
 
-        is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None
-        is_adapter = mid_block_additional_residual is None and down_block_additional_residuals is not None
+            is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None
+            is_adapter = mid_block_additional_residual is None and down_block_additional_residuals is not None
 
-        down_block_res_samples = (sample,)
-        for i, downsample_block in enumerate(self.down_blocks):
-            if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
-                # For t2i-adapter CrossAttnDownBlock2D
-                additional_residuals = {}
-                if is_adapter and len(down_block_additional_residuals) > 0:
-                    additional_residuals["additional_residuals"] = down_block_additional_residuals.pop(0)
+            down_block_res_samples = (sample,)
+            for i, downsample_block in enumerate(self.down_blocks):
+                if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
+                    # For t2i-adapter CrossAttnDownBlock2D
+                    additional_residuals = {}
+                    if is_adapter and len(down_block_additional_residuals) > 0:
+                        additional_residuals["additional_residuals"] = down_block_additional_residuals.pop(0)
 
-                sample, res_samples = downsample_block(
-                    hidden_states=sample,
-                    temb=emb,
+                    sample, res_samples = downsample_block(
+                        hidden_states=sample,
+                        temb=emb,
+                        encoder_hidden_states=encoder_hidden_states,
+                        attention_mask=attention_mask,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        encoder_attention_mask=encoder_attention_mask,
+                        **additional_residuals,
+                    )
+                else:
+                    sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+
+                    if is_adapter and len(down_block_additional_residuals) > 0:
+                        sample += down_block_additional_residuals.pop(0)
+
+                down_block_res_samples += res_samples
+
+            if is_controlnet:
+                new_down_block_res_samples = ()
+
+                for down_block_res_sample, down_block_additional_residual in zip(
+                    down_block_res_samples, down_block_additional_residuals
+                ):
+                    down_block_res_sample = down_block_res_sample + down_block_additional_residual
+                    new_down_block_res_samples = new_down_block_res_samples + (down_block_res_sample,)
+
+                down_block_res_samples = new_down_block_res_samples
+
+            if self.addition_downsample:
+                global_sample = sample
+                global_sample = self.downsample(global_sample)
+                for layer in self.conv_block:
+                    global_sample = layer(global_sample)
+                global_sample = self.addition_act_out(self.addition_conv_out(global_sample))
+                global_sample = self.upsample(global_sample)
+            # 4. mid
+            if self.mid_block is not None:
+                sample = self.mid_block(
+                    sample,
+                    emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
-                    **additional_residuals,
                 )
-            else:
-                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
 
-                if is_adapter and len(down_block_additional_residuals) > 0:
-                    sample += down_block_additional_residuals.pop(0)
+            if is_controlnet:
+                sample = sample + mid_block_additional_residual
 
-            down_block_res_samples += res_samples
+            if self.addition_downsample:
+                sample = sample + global_sample
 
-        if is_controlnet:
-            new_down_block_res_samples = ()
-
-            for down_block_res_sample, down_block_additional_residual in zip(
-                down_block_res_samples, down_block_additional_residuals
-            ):
-                down_block_res_sample = down_block_res_sample + down_block_additional_residual
-                new_down_block_res_samples = new_down_block_res_samples + (down_block_res_sample,)
-
-            down_block_res_samples = new_down_block_res_samples
-
-        if self.addition_downsample:
-            global_sample = sample
-            global_sample = self.downsample(global_sample)
-            for layer in self.conv_block:
-                global_sample = layer(global_sample)
-            global_sample = self.addition_act_out(self.addition_conv_out(global_sample))
-            global_sample = self.upsample(global_sample)
-        # 4. mid
-        if self.mid_block is not None:
-            sample = self.mid_block(
-                sample,
-                emb,
-                encoder_hidden_states=encoder_hidden_states,
-                attention_mask=attention_mask,
-                cross_attention_kwargs=cross_attention_kwargs,
-                encoder_attention_mask=encoder_attention_mask,
-            )
-            
-        if is_controlnet:
-            sample = sample + mid_block_additional_residual
-
-        if self.addition_downsample:
-            sample = sample + global_sample
-            
         # 5. up
-        for i, upsample_block in enumerate(self.up_blocks):
+        if use_cache and self._cache_feature is not None:
+            sample = self._cache_feature
+            down_block_res_samples = self._cache_res_samples
+            up_blocks_iter = list(enumerate(self.up_blocks))[1:]
+        else:
+            up_blocks_iter = list(enumerate(self.up_blocks))
+
+        for i, upsample_block in up_blocks_iter:
             is_final_block = i == len(self.up_blocks) - 1
 
             res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
@@ -1137,6 +1149,10 @@ class UNetMV2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixi
                 sample = upsample_block(
                     hidden_states=sample, temb=emb, res_hidden_states_tuple=res_samples, upsample_size=upsample_size
                 )
+
+            if i == 0:
+                self._cache_feature = sample
+                self._cache_res_samples = down_block_res_samples
         if torch.isnan(sample).any() or torch.isinf(sample).any():
             print("NAN in sample, stop training.")
             exit() 
