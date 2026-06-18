@@ -687,9 +687,26 @@ class GaussianModel:
             attributes = attributes[filter_mask]
             elements = elements[filter_mask]
 
-        elements[:] = list(map(tuple, attributes))
-        el = PlyElement.describe(elements, "vertex")
-        PlyData([el]).write(path)
+        # Build structured array column-by-column (vectorised) to avoid the
+        # slow list(map(tuple, ...)) conversion that plyfile requires.
+        col = 0
+        for name, kind in dtype_full[:3]:   # xyz — float32
+            elements[name] = attributes[:, col]; col += 1
+        for name, _ in dtype_full[3:6]:     # rgb — cast to uint8
+            elements[name] = attributes[:, col].astype(np.uint8); col += 1
+        for name, _ in dtype_full[6:]:      # remaining floats
+            elements[name] = attributes[:, col]; col += 1
+
+        # Write binary PLY directly: header + raw struct bytes (no plyfile overhead).
+        _ply_type = {"f4": "float", "f2": "half", "u1": "uchar", "i4": "int", "u4": "uint"}
+        header_lines = ["ply", "format binary_little_endian 1.0",
+                        f"element vertex {elements.shape[0]}"]
+        for name, kind in dtype_full:
+            header_lines.append(f"property {_ply_type[kind]} {name}")
+        header_lines.append("end_header")
+        with open(path, "wb") as f:
+            f.write(("\n".join(header_lines) + "\n").encode())
+            f.write(elements.tobytes())
 
     def load_ply(self, path):
         plydata = PlyData.read(path)
