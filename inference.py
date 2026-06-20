@@ -21,6 +21,7 @@ from single input images using multi-view diffusion and Gaussian splatting.
 
 import gc
 import os
+import time
 import yaml
 import json
 import importlib
@@ -178,9 +179,8 @@ def process_single_image(
     face_detector: Optional[MTCNN] = None
 ) -> None:
     """Process a single image through the 3D reconstruction pipeline."""
-    import time
-    pipeline_start = time.time()
-    print(f"Processing {image_file}")
+    pipeline_start = time.perf_counter()
+    print(f"Processing {image_file}", flush=True)
     image_name = image_file.split(".")[0]
 
     input_image = Image.open(os.path.join(input_dir, image_file))
@@ -190,7 +190,7 @@ def process_single_image(
     os.makedirs(demo_output_local_dir, exist_ok=True)
 
     # Preprocess image
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         if auto_crop:
             input_image = preprocess_image(input_image_np)
@@ -204,12 +204,12 @@ def process_single_image(
         except Exception as e2:
             print(f"Background removal also failed: {e2}, using original image")
             input_image = input_image.resize((DEFAULT_IMG_SIZE, DEFAULT_IMG_SIZE), Image.LANCZOS)
-    print(f"[TIMING] Preprocessing: {time.time() - t0:.2f}s")
+    print(f"[facelift-infer] crop {time.perf_counter() - t0:.2f}s", flush=True)
 
     input_image.save(os.path.join(demo_output_local_dir, "input.png"))
 
     # Generate multi-view images
-    t0 = time.time()
+    t0 = time.perf_counter()
     mv_imgs = unclip_pipeline(
         input_image,
         None,
@@ -220,7 +220,7 @@ def process_single_image(
         generator=generator,
         eta=1.0,
     ).images
-    print(f"[TIMING] Multi-view diffusion ({step_2D} steps): {time.time() - t0:.2f}s")
+    print(f"[facelift-infer] diffusion({step_2D} steps) {time.perf_counter() - t0:.2f}s", flush=True)
 
     # Always use 6 views
     if len(mv_imgs) == 7:
@@ -259,17 +259,17 @@ def process_single_image(
     # split_data=False skips the model's internal rendering pass, which would otherwise
     # rasterize all 1.57M pixel-aligned Gaussians and allocate a BinningState sort buffer
     # of ~130+ TiB — far beyond available GPU memory.
-    t0 = time.time()
+    t0 = time.perf_counter()
     with torch.no_grad():
         with torch.autocast(enabled=True, device_type="cuda", dtype=torch.float16):
             result = gs_lrm_model.forward(batch, create_visual=False, split_data=False)
-    print(f"[TIMING] GSLRM reconstruction: {time.time() - t0:.2f}s")
+    print(f"[facelift-infer] gslrm {time.perf_counter() - t0:.2f}s", flush=True)
 
     # Save Gaussian splatting result
     _n_before_filter = result.gaussians[0]._xyz.shape[0]
     print(f"[DEBUG] Gaussians BEFORE apply_all_filters: {_n_before_filter:,}")
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     filtered_gaussians = result.gaussians[0].apply_all_filters(
         opacity_thres=0.04,
         scaling_thres=0.1,
@@ -281,13 +281,13 @@ def process_single_image(
     _n_after_filter = result.gaussians[0]._xyz.shape[0]
     print(f"[DEBUG] Gaussians AFTER apply_all_filters: {_n_after_filter:,} "
           f"(removed {_n_before_filter - _n_after_filter:,})")
-    print(f"[TIMING] apply_all_filters: {time.time() - t0:.2f}s")
+    print(f"[facelift-infer] gs_filter {time.perf_counter() - t0:.2f}s", flush=True)
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     filtered_gaussians.save_ply(os.path.join(demo_output_local_dir, "gaussians.ply"))
-    print(f"[TIMING] save_ply: {time.time() - t0:.2f}s")
+    print(f"[facelift-infer] ply_save {time.perf_counter() - t0:.2f}s", flush=True)
 
-    print(f"[TIMING] Total: {time.time() - pipeline_start:.2f}s")
+    print(f"[facelift-infer] total {time.perf_counter() - pipeline_start:.2f}s", flush=True)
 
     # Release GPU memory before processing the next image
     del result
